@@ -22,58 +22,64 @@ st.title("📅 Google Calendar AI Agent")
 os.environ['OPENAI_API_KEY'] = st.secrets["OPENAI_API_KEY"]
 os.environ['GROQ_API_KEY'] = st.secrets["GROQ_API_KEY"]
 
-# -------------------- GOOGLE SERVICE ACCOUNT --------------------
-creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
+# -------------------- SESSION INIT --------------------
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-credentials = service_account.Credentials.from_service_account_info(
-    creds_dict,
-    scopes=['https://www.googleapis.com/auth/calendar']
-)
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = "chat-session"
 
-# Build service
-service = build_calendar_service(credentials=credentials)
-
-# -------------------- 🔥 MONKEY PATCH (CRITICAL FIX) --------------------
-import langchain_google_community.calendar.utils as cal_utils
-cal_utils.get_google_credentials = lambda *args, **kwargs: credentials
-
-# -------------------- TOOLKIT --------------------
-toolkit = CalendarToolkit(service=service).get_tools()
-
-# -------------------- TIME --------------------
-tz = pytz.timezone("Asia/Karachi")
-current_time = datetime.now(tz).isoformat()
-
-# -------------------- MODELS --------------------
-model = ChatOpenAI(
-    model='gpt-4.1-mini-2025-04-14',
-    temperature=0.3,
-    max_completion_tokens=512
-)
-
-summarize_model = ChatGroq(
-    model='llama-3.1-8b-instant',
-    temperature=0.4
-)
-
-# -------------------- PROMPT --------------------
-system_prompt = f"""
-You are a smart calendar assistant.
-
-Current time: {current_time}
-
-You can:
-- Check events
-- Create events
-- Update events
-
-Always use tools when needed.
-"""
-
-# -------------------- AGENT (CACHED) --------------------
+# -------------------- CACHE: TOOLKIT --------------------
 @st.cache_resource
-def get_agent():
-    return create_agent(
+def get_calendar_tools():
+    creds_dict = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
+
+    credentials = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=['https://www.googleapis.com/auth/calendar']
+    )
+
+    service = build_calendar_service(credentials=credentials)
+
+    # 🔥 Monkey patch (fix OAuth issue)
+    import langchain_google_community.calendar.utils as cal_utils
+    cal_utils.get_google_credentials = lambda *args, **kwargs: credentials
+
+    toolkit = CalendarToolkit(service=service).get_tools()
+
+    return toolkit
+
+# -------------------- CACHE: AGENT --------------------
+@st.cache_resource
+def get_agent(toolkit):
+    model = ChatOpenAI(
+        model='gpt-4.1-mini-2025-04-14',
+        temperature=0.3,
+        max_completion_tokens=512
+    )
+
+    summarize_model = ChatGroq(
+        model='llama-3.1-8b-instant',
+        temperature=0.4
+    )
+
+    tz = pytz.timezone("Asia/Karachi")
+    current_time = datetime.now(tz).isoformat()
+
+    system_prompt = f"""
+    You are a smart calendar assistant.
+
+    Current time: {current_time}
+
+    You can:
+    - Check events
+    - Create events
+    - Update events
+
+    Always use tools when needed.
+    """
+
+    agent = create_agent(
         model=model,
         tools=toolkit,
         checkpointer=InMemorySaver(),
@@ -87,11 +93,11 @@ def get_agent():
         system_prompt=system_prompt
     )
 
-agent = get_agent()
+    return agent
 
-# -------------------- SESSION STATE --------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# -------------------- INIT --------------------
+toolkit = get_calendar_tools()
+agent = get_agent(toolkit)
 
 # -------------------- DISPLAY CHAT --------------------
 for msg in st.session_state.messages:
@@ -109,15 +115,19 @@ if user_input:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            response = agent.invoke(
+            response_text = ""
+
+            # ✅ STREAM FIX (prevents tool_call errors)
+            for chunk in agent.stream(
                 {"messages": [{"role": "user", "content": user_input}]},
-                config={"configurable": {"thread_id": "1"}}
-            )
+                config={"configurable": {"thread_id": st.session_state.thread_id}}
+            ):
+                if "messages" in chunk:
+                    response_text = chunk["messages"][-1].content
 
-            reply = response.get("messages")[-1].content
-            st.markdown(reply)
+            st.markdown(response_text)
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.session_state.messages.append({"role": "assistant", "content": response_text})
 
 # -------------------- SIDEBAR --------------------
 with st.sidebar:
