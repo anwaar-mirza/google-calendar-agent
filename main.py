@@ -30,11 +30,15 @@ credentials = service_account.Credentials.from_service_account_info(
     scopes=['https://www.googleapis.com/auth/calendar']
 )
 
+# Build service
 service = build_calendar_service(credentials=credentials)
-toolkit = CalendarToolkit(
-    service=service,
-    credentials=credentials
-).get_tools()
+
+# -------------------- 🔥 MONKEY PATCH (CRITICAL FIX) --------------------
+import langchain_google_community.calendar.utils as cal_utils
+cal_utils.get_google_credentials = lambda *args, **kwargs: credentials
+
+# -------------------- TOOLKIT --------------------
+toolkit = CalendarToolkit(service=service).get_tools()
 
 # -------------------- TIME --------------------
 tz = pytz.timezone("Asia/Karachi")
@@ -52,22 +56,38 @@ summarize_model = ChatGroq(
     temperature=0.4
 )
 
-# -------------------- AGENT --------------------
-from prompts import system_prompt
+# -------------------- PROMPT --------------------
+system_prompt = f"""
+You are a smart calendar assistant.
 
-agent = create_agent(
-    model=model,
-    tools=toolkit,
-    checkpointer=InMemorySaver(),
-    middleware=[
-        SummarizationMiddleware(
-            model=summarize_model,
-            trigger=("tokens", 4000),
-            keep=("messages", 25)
-        )
-    ],
-    system_prompt=system_prompt.format(current_time=current_time)
-)
+Current time: {current_time}
+
+You can:
+- Check events
+- Create events
+- Update events
+
+Always use tools when needed.
+"""
+
+# -------------------- AGENT (CACHED) --------------------
+@st.cache_resource
+def get_agent():
+    return create_agent(
+        model=model,
+        tools=toolkit,
+        checkpointer=InMemorySaver(),
+        middleware=[
+            SummarizationMiddleware(
+                model=summarize_model,
+                trigger=("tokens", 4000),
+                keep=("messages", 25)
+            )
+        ],
+        system_prompt=system_prompt
+    )
+
+agent = get_agent()
 
 # -------------------- SESSION STATE --------------------
 if "messages" not in st.session_state:
@@ -82,13 +102,11 @@ for msg in st.session_state.messages:
 user_input = st.chat_input("Ask about your calendar...")
 
 if user_input:
-    # Add user message
     st.session_state.messages.append({"role": "user", "content": user_input})
 
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Agent response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
             response = agent.invoke(
@@ -99,16 +117,20 @@ if user_input:
             reply = response.get("messages")[-1].content
             st.markdown(reply)
 
-    # Save assistant response
     st.session_state.messages.append({"role": "assistant", "content": reply})
 
 # -------------------- SIDEBAR --------------------
 with st.sidebar:
     st.header("⚙️ Settings")
+
     if st.button("Clear Chat"):
         st.session_state.messages = []
         st.rerun()
 
     st.markdown("---")
     st.markdown("### ℹ️ Notes")
-    st.markdown("- Make sure calendar is shared with service account\n- Secrets are configured correctly\n- Supports create, read, update events")
+    st.markdown("""
+- Calendar must be shared with service account  
+- Secrets must be configured correctly  
+- Supports create, read, update events  
+""")
