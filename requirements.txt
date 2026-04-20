@@ -1,0 +1,10 @@
+langchain-google-community
+google-auth-oauthlib
+langchain-huggingface
+langchain
+pytz
+tzdata
+langchain-groq
+langchain-google-genai
+langchain-openai
+streamlit
