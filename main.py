@@ -31,7 +31,10 @@ credentials = service_account.Credentials.from_service_account_info(
 )
 
 service = build_calendar_service(credentials=credentials)
-toolkit = CalendarToolkit(service=service).get_tools()
+toolkit = CalendarToolkit(
+    service=service,
+    credentials=credentials
+).get_tools()
 
 # -------------------- TIME --------------------
 tz = pytz.timezone("Asia/Karachi")
